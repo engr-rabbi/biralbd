@@ -1,0 +1,73 @@
+# Builds the site and publishes it to GitHub Pages on every push to main.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Works whether you saved it under Secrets or under Variables.
+      NEXT_PUBLIC_SHEETS_API_URL: ${{ secrets.NEXT_PUBLIC_SHEETS_API_URL || vars.NEXT_PUBLIC_SHEETS_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check configuration (fails early if the value is missing or wrong)
+        run: |
+          url="$NEXT_PUBLIC_SHEETS_API_URL"
+          if [ -z "$url" ]; then
+            echo "::error::NEXT_PUBLIC_SHEETS_API_URL is EMPTY. Add it under Settings > Secrets and variables > Actions > Repository secrets (exact same name). See DEPLOY.md."
+            exit 1
+          fi
+          echo "NEXT_PUBLIC_SHEETS_API_URL is set (${#url} characters)"
+          case "$url" in
+            https://script.google.com/macros/s/*/exec) ;;
+            *) echo "::error::NEXT_PUBLIC_SHEETS_API_URL must look like https://script.google.com/macros/s/XXXX/exec (no spaces, must end with /exec)"; exit 1 ;;
+          esac
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Work out the base path (user site vs project site)
+        run: |
+          REPO="${GITHUB_REPOSITORY#*/}"
+          if [[ "$REPO" == *.github.io ]]; then
+            echo "NEXT_PUBLIC_BASE_PATH=" >> "$GITHUB_ENV"
+          else
+            echo "NEXT_PUBLIC_BASE_PATH=/$REPO" >> "$GITHUB_ENV"
+          fi
+
+      # "npm install" (not "npm ci") because package.json changed when the site
+      # moved from Supabase to Google Sheets; this refreshes the lock file.
+      - run: npm install --no-audit --no-fund
+
+      - name: Build static site
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
